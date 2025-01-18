@@ -1,8 +1,77 @@
 module Crystal
+  # Specialized container for ASTNodes to use for bindings tracking.
+  #
+  # The average number of elements in both dependencies and observers is below 2
+  # for ASTNodes. This struct inlines the first two elements saving up 4
+  # allocations per node (two arrays, with a header and buffer for each) but we
+  # need to pay a slight extra cost in memory upfront: a total of 6 pointers (48
+  # bytes) vs 2 pointers (16 bytes). The other downside is that since this is a
+  # struct, we need to be careful with mutation.
+  struct SmallNodeList
+    include Enumerable(ASTNode)
+
+    @first : ASTNode?
+    @second : ASTNode?
+    @tail : Array(ASTNode)?
+
+    def each(& : ASTNode ->)
+      yield @first || return
+      yield @second || return
+      @tail.try(&.each { |node| yield node })
+    end
+
+    def size
+      if @first.nil?
+        0
+      elsif @second.nil?
+        1
+      elsif (tail = @tail).nil?
+        2
+      else
+        2 + tail.size
+      end
+    end
+
+    def push(node : ASTNode) : self
+      if @first.nil?
+        @first = node
+      elsif @second.nil?
+        @second = node
+      elsif (tail = @tail).nil?
+        @tail = [node] of ASTNode
+      else
+        tail.push(node)
+      end
+      self
+    end
+
+    def reject!(& : ASTNode ->) : self
+      if first = @first
+        if second = @second
+          if tail = @tail
+            tail.reject! { |node| yield node }
+          end
+          if yield second
+            @second = tail.try &.shift?
+          end
+        end
+        if yield first
+          @first = @second
+          @second = tail.try &.shift?
+        end
+      end
+      self
+    end
+
+    def concat(nodes : Enumerable(ASTNode)) : self
+      nodes.each { |node| self.push(node) }
+      self
+    end
+  end
+
   class ASTNode
-    property! dependencies : Array(ASTNode)
-    property freeze_type : Type?
-    property observers : Array(ASTNode)?
+    getter dependencies : SmallNodeList = SmallNodeList.new
+    @observers : SmallNodeList = SmallNodeList.new
     property enclosing_call : Call?
 
     @dirty = false
@@ -14,7 +83,7 @@ module Crystal
     end
 
     def type?
-      @type || @freeze_type
+      @type || freeze_type
     end
 
     def type(*, with_autocast = false)
@@ -41,7 +110,7 @@ module Crystal
 
     def set_type(type : Type)
       type = type.remove_alias_if_simple
-      if !type.no_return? && (freeze_type = @freeze_type) && !type.implements?(freeze_type)
+      if !type.no_return? && (freeze_type = self.freeze_type) && !type.implements?(freeze_type)
         raise_frozen_type freeze_type, type, self
       end
       @type = type
@@ -55,11 +124,11 @@ module Crystal
       set_type type
     rescue ex : FrozenTypeException
       # See if we can find where the mismatched type came from
-      if from && !ex.inner && (freeze_type = @freeze_type) && type.is_a?(UnionType) && type.includes_type?(freeze_type) && type.union_types.size == 2
+      if from && !ex.inner && (freeze_type = self.freeze_type) && type.is_a?(UnionType) && type.includes_type?(freeze_type) && type.union_types.size == 2
         other_type = type.union_types.find { |type| type != freeze_type }
         trace = from.find_owner_trace(freeze_type.program, other_type)
         ex.inner = trace
-      elsif from && !ex.inner && (freeze_type = @freeze_type)
+      elsif from && !ex.inner && (freeze_type = self.freeze_type)
         trace = from.find_owner_trace(freeze_type.program, type)
         ex.inner = trace
       end
@@ -69,6 +138,10 @@ module Crystal
       else
         ::raise ex
       end
+    end
+
+    def freeze_type
+      nil
     end
 
     def raise_frozen_type(freeze_type, invalid_type, from)
@@ -103,25 +176,23 @@ module Crystal
       @type
     end
 
-    def bind_to(node : ASTNode)
-      bind(node) do |dependencies|
-        dependencies.push node
+    def bind_to(node : ASTNode) : Nil
+      bind(node) do
+        @dependencies.push node
         node.add_observer self
-        node
       end
     end
 
-    def bind_to(nodes : Array)
+    def bind_to(nodes : Indexable) : Nil
       return if nodes.empty?
 
-      bind do |dependencies|
-        dependencies.concat nodes
+      bind do
+        @dependencies.concat nodes
         nodes.each &.add_observer self
-        nodes.first
       end
     end
 
-    def bind(from = nil)
+    def bind(from = nil, &)
       # Quick check to provide a better error message when assigning a type
       # to a variable whose type is frozen
       if self.is_a?(MetaTypeVar) && (freeze_type = self.freeze_type) && from &&
@@ -129,18 +200,12 @@ module Crystal
         raise_frozen_type freeze_type, from_type, from
       end
 
-      dependencies = @dependencies ||= [] of ASTNode
+      yield
 
-      node = yield dependencies
-
-      if dependencies.size == 1
-        new_type = node.type?
-      else
-        new_type = Type.merge dependencies
-      end
+      new_type = type_from_dependencies
       new_type = map_type(new_type) if new_type
 
-      if new_type && (freeze_type = @freeze_type)
+      if new_type && (freeze_type = self.freeze_type)
         new_type = restrict_type_to_freeze_type(freeze_type, new_type)
       end
 
@@ -152,23 +217,26 @@ module Crystal
       propagate
     end
 
+    def type_from_dependencies : Type?
+      Type.merge @dependencies
+    end
+
     def unbind_from(nodes : Nil)
       # Nothing to do
     end
 
     def unbind_from(node : ASTNode)
-      @dependencies.try &.reject! &.same?(node)
+      @dependencies.reject! &.same?(node)
       node.remove_observer self
     end
 
-    def unbind_from(nodes : Array(ASTNode))
-      @dependencies.try &.reject! { |dep| nodes.any? &.same?(dep) }
+    def unbind_from(nodes : Enumerable(ASTNode))
+      @dependencies.reject! { |dep| nodes.any? &.same?(dep) }
       nodes.each &.remove_observer self
     end
 
     def add_observer(observer)
-      observers = @observers ||= [] of ASTNode
-      observers.push observer
+      @observers.push observer
     end
 
     def remove_observer(observer)
@@ -203,10 +271,10 @@ module Crystal
     def update(from = nil)
       return if @type && @type.same? from.try &.type?
 
-      new_type = Type.merge dependencies
+      new_type = type_from_dependencies
       new_type = map_type(new_type) if new_type
 
-      if new_type && (freeze_type = @freeze_type)
+      if new_type && (freeze_type = self.freeze_type)
         new_type = restrict_type_to_freeze_type(freeze_type, new_type)
       end
 
@@ -268,16 +336,10 @@ module Crystal
       visited = Set(ASTNode).new.compare_by_identity
       owner_trace << node if node.type?.try &.includes_type?(owner)
       visited.add node
-      while deps = node.dependencies?
-        dependencies = deps.select { |dep| dep.type? && dep.type.includes_type?(owner) && !visited.includes?(dep) }
-        if dependencies.size > 0
-          node = dependencies.first
-          nil_reason = node.nil_reason if node.is_a?(MetaTypeVar)
-          owner_trace << node if node
-          visited.add node
-        else
-          break
-        end
+      while node = node.dependencies.find { |dep| dep.type? && dep.type.includes_type?(owner) && !visited.includes?(dep) }
+        nil_reason = node.nil_reason if node.is_a?(MetaTypeVar)
+        owner_trace << node if node
+        visited.add node
       end
 
       MethodTraceException.new(owner, owner_trace, nil_reason, program.show_error_trace?)
@@ -576,7 +638,7 @@ module Crystal
           node_type = node.type?
           return unless node_type
 
-          if node.is_a?(Path) && (target_const = node.target_const)
+          if node.is_a?(Path) && node.target_const
             node.raise "can't use constant as type for NamedTuple"
           end
 
@@ -597,6 +659,12 @@ module Crystal
             node = expanded
           end
           if node.is_a?(InstanceSizeOf) && (expanded = node.expanded)
+            node = expanded
+          end
+          if node.is_a?(AlignOf) && (expanded = node.expanded)
+            node = expanded
+          end
+          if node.is_a?(InstanceAlignOf) && (expanded = node.expanded)
             node = expanded
           end
           if node.is_a?(OffsetOf) && (expanded = node.expanded)

@@ -1,6 +1,87 @@
 require "./location"
 
 module Crystal
+  # All possible identifiers that may be considered keywords.
+  enum Keyword
+    ABSTRACT
+    ALIAS
+    ALIGNOF
+    ANNOTATION
+    AS
+    AS_QUESTION
+    ASM
+    BEGIN
+    BREAK
+    CASE
+    CLASS
+    DEF
+    DO
+    ELSE
+    ELSIF
+    END
+    ENSURE
+    ENUM
+    EXTEND
+    FALSE
+    FOR
+    FUN
+    IF
+    IN
+    INCLUDE
+    INSTANCE_ALIGNOF
+    INSTANCE_SIZEOF
+    IS_A_QUESTION
+    LIB
+    MACRO
+    MODULE
+    NEXT
+    NIL
+    NIL_QUESTION
+    OF
+    OFFSETOF
+    OUT
+    POINTEROF
+    PRIVATE
+    PROTECTED
+    REQUIRE
+    RESCUE
+    RESPONDS_TO_QUESTION
+    RETURN
+    SELECT
+    SELF
+    SIZEOF
+    STRUCT
+    SUPER
+    THEN
+    TRUE
+    TYPE
+    TYPEOF
+    UNINITIALIZED
+    UNION
+    UNLESS
+    UNTIL
+    VERBATIM
+    WHEN
+    WHILE
+    WITH
+    YIELD
+
+    def to_s
+      case self
+      when AS_QUESTION
+        "as?"
+      when IS_A_QUESTION
+        "is_a?"
+      when NIL_QUESTION
+        "nil?"
+      when RESPONDS_TO_QUESTION
+        "responds_to?"
+      else
+        super.downcase
+      end
+    end
+  end
+
   class Token
     enum Kind
       EOF
@@ -168,13 +249,20 @@ module Crystal
         end
       end
 
+      # Returns true if the operator can be used in prefix notation.
+      #
+      # Related: `ToSVisitor::UNARY_OPERATORS`
+      def unary_operator?
+        self.in?(OP_BANG, OP_PLUS, OP_MINUS, OP_TILDE, OP_AMP_PLUS, OP_AMP_MINUS)
+      end
+
       def magic?
         magic_dir? || magic_end_line? || magic_file? || magic_line?
       end
     end
 
     property type : Kind
-    property value : Char | String | Symbol | Nil
+    property value : Char | String | Keyword | Nil
     property number_kind : NumberKind
     property line_number : Int32
     property column_number : Int32
@@ -274,15 +362,11 @@ module Crystal
     def location=(@location)
     end
 
-    def token?(token)
-      @type.token? && @value == token
-    end
-
     def keyword?
-      @type.ident? && @value.is_a?(Symbol)
+      @type.ident? && @value.is_a?(Keyword)
     end
 
-    def keyword?(keyword)
+    def keyword?(keyword : Keyword)
       @type.ident? && @value == keyword
     end
 

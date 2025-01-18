@@ -406,7 +406,7 @@ struct Crystal::TypeDeclarationProcessor
     when NonGenericModuleType
       type = type_info.type
       if nilable_instance_var?(owner, name)
-        type = Type.merge!([type, @program.nil])
+        type = Type.merge!(type, @program.nil)
       end
 
       # Same as above, only Nil makes no sense
@@ -423,7 +423,7 @@ struct Crystal::TypeDeclarationProcessor
     when GenericClassType
       type = type_info.type
       if nilable_instance_var?(owner, name)
-        type = Type.merge!([type, @program.nil])
+        type = Type.merge!(type, @program.nil)
       end
 
       # Same as above, only Nil makes no sense
@@ -442,7 +442,7 @@ struct Crystal::TypeDeclarationProcessor
     when GenericModuleType
       type = type_info.type
       if nilable_instance_var?(owner, name)
-        type = Type.merge!([type, @program.nil])
+        type = Type.merge!(type, @program.nil)
       end
 
       declare_meta_type_var(owner.instance_vars, owner, name, type, type_info.location, instance_var: true, annotations: type_info.annotations)
@@ -561,7 +561,6 @@ struct Crystal::TypeDeclarationProcessor
         next if info.def.calls_super? && ancestor_non_nilable.try(&.includes?(instance_var))
 
         unless info.try(&.instance_vars.try(&.includes?(instance_var)))
-          all_assigned = false
           # Remember that this variable wasn't initialized here, and later error
           # if it turns out to be non-nilable
           nilable_vars = @nilable_instance_vars[owner] ||= {} of String => InitializeInfo
@@ -622,14 +621,10 @@ struct Crystal::TypeDeclarationProcessor
   end
 
   private def remove_duplicate_instance_vars_declarations
-    # All the types that we checked for duplicate variables
-    duplicates_checked = Set(Type).new
-    remove_duplicate_instance_vars_declarations(@program, duplicates_checked)
+    remove_duplicate_instance_vars_declarations(@program)
   end
 
-  private def remove_duplicate_instance_vars_declarations(type : Type, duplicates_checked : Set(Type))
-    return unless duplicates_checked.add?(type)
-
+  private def remove_duplicate_instance_vars_declarations(type : Type)
     # If a class has an instance variable that already exists in a superclass, remove it.
     # Ideally we should process instance variables in a top-down fashion, but it's tricky
     # with modules and multiple-inheritance. Removing duplicates at the end is maybe
@@ -651,7 +646,7 @@ struct Crystal::TypeDeclarationProcessor
     end
 
     type.types?.try &.each_value do |nested_type|
-      remove_duplicate_instance_vars_declarations(nested_type, duplicates_checked)
+      remove_duplicate_instance_vars_declarations(nested_type)
     end
   end
 

@@ -133,8 +133,8 @@ class Crystal::ASTNode
   end
 end
 
-def assert_syntax_error(str, message = nil, line = nil, column = nil, metafile = __FILE__, metaline = __LINE__, metaendline = __END_LINE__)
-  it "says syntax error on #{str.inspect}", metafile, metaline, metaendline do
+def assert_syntax_error(str, message = nil, line = nil, column = nil, metafile = __FILE__, metaline = __LINE__, metaendline = __END_LINE__, *, focus : Bool = false)
+  it "says syntax error on #{str.inspect}", metafile, metaline, metaendline, focus: focus do
     begin
       parse str
       fail "Expected SyntaxException to be raised", metafile, metaline
@@ -158,8 +158,9 @@ def assert_syntax_error(str, message = nil, line = nil, column = nil, metafile =
   end
 end
 
-def parse(string, wants_doc = false, filename = nil)
-  parser = Parser.new(string)
+def parse(string, wants_doc = false, filename = nil, warnings = nil)
+  parser = Parser.new(string, warnings: warnings)
+  parser.warnings = warnings if warnings
   parser.wants_doc = wants_doc
   if filename
     parser.filename = filename
